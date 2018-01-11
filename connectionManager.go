@@ -24,30 +24,3 @@ func initialize(endpoint string, log *rabbitLogger) rabbit {
 func (r *rabbit) close() {
 	r.connection.Close()
 }
-
-func (r *rabbit) declareExchange(name, kind string, durable, autoDelete, internal bool, args map[string]interface{}) {
-	channel, err := r.connection.Channel()
-	checkError(err, "error creating topology channel", r.log)
-	defer channel.Close()
-
-	exErr := channel.ExchangeDeclare(name, kind, durable, autoDelete, internal, false, args)
-	checkError(exErr, "error creating exchange", r.log)
-}
-
-func (r *rabbit) declareQueue(name string, durable, autoDelete, exclusive bool, args map[string]interface{}) {
-	channel, err := r.connection.Channel()
-	checkError(err, "error creating topology channel", r.log)
-	defer channel.Close()
-
-	_, qErr := channel.QueueDeclare(name, durable, autoDelete, exclusive, false, args)
-	checkError(qErr, "error creating queue", r.log)
-}
-
-func (r *rabbit) bindQueue(name, routingKey, exchangeName string, args map[string]interface{}) {
-	channel, err := r.connection.Channel()
-	checkError(err, "error creating topology channel", r.log)
-	defer channel.Close()
-
-	bErr := channel.QueueBind(name, routingKey, exchangeName, false, args)
-	checkError(bErr, "error creating the queue bind", r.log)
-}
