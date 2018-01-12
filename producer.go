@@ -23,6 +23,7 @@ type producer struct {
 	exchangeName      string
 	deliveryMode      DeliveryMode
 	log               *rabbitLogger
+	logLevel          LogLevel
 }
 
 func (r *rabbit) configureProducer(numberOfProducers int, exchangeName string, deliveryMode DeliveryMode) IProducer {
@@ -57,7 +58,7 @@ func (r *rabbit) configureProducer(numberOfProducers int, exchangeName string, d
 		}()
 	}
 
-	return &producer{numberOfProducers, channels, 0, exchangeName, deliveryMode, r.log}
+	return &producer{numberOfProducers, channels, 0, exchangeName, deliveryMode, r.log, r.logLevel}
 }
 
 func (p *producer) getChannel() *amqp.Channel {
@@ -67,8 +68,12 @@ func (p *producer) getChannel() *amqp.Channel {
 
 func (p *producer) Send(message interface{}, routingKey, messageID string, header map[string]interface{}, contentType ContentType) error {
 	channel := p.getChannel()
-	serialized, err := encode(message, contentType)
+	serialized, err := serialize(message, contentType)
 	checkError(err, "json serializer error", p.log)
+	messageType := reflect.TypeOf(message).String()
+	if p.logLevel >= Debug {
+		p.log.debug(fmt.Sprintf("Sending Message %s: %s", messageType, serialized))
+	}
 
 	pErr := channel.Publish(p.exchangeName, routingKey, false, false, amqp.Publishing{
 		Headers:      header,
@@ -76,13 +81,13 @@ func (p *producer) Send(message interface{}, routingKey, messageID string, heade
 		DeliveryMode: uint8(p.deliveryMode),
 		MessageId:    messageID,
 		Timestamp:    time.Now().UTC(),
-		Type:         reflect.TypeOf(message).String(),
+		Type:         messageType,
 		Body:         serialized,
 	})
 	return pErr
 }
 
-func encode(message interface{}, contentType ContentType) ([]byte, error) {
+func serialize(message interface{}, contentType ContentType) ([]byte, error) {
 	switch contentType {
 	case Json:
 		serialized, err := json.Marshal(message)

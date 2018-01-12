@@ -7,10 +7,11 @@ type rabbitLogger struct {
 	err   logger
 	info  logger
 	warn  logger
+	debug logger
 }
 
-func CreateLogger(info logger, err logger, fatal logger, warn logger) *rabbitLogger {
-	return &rabbitLogger{fatal, err, info, warn}
+func CreateLogger(debug, info, warn, err, fatal logger) *rabbitLogger {
+	return &rabbitLogger{fatal, err, info, warn, debug}
 }
 
 type ContentType string
@@ -25,4 +26,14 @@ type DeliveryMode uint8
 const (
 	Transient  DeliveryMode = 0
 	Persistent DeliveryMode = 1
+)
+
+type LogLevel int
+
+const (
+	Fatal LogLevel = iota
+	Error
+	Warn
+	Info
+	Debug
 )

@@ -6,9 +6,10 @@ import "fmt"
 type rabbit struct {
 	connection *amqp.Connection
 	log        *rabbitLogger
+	logLevel   LogLevel
 }
 
-func initialize(endpoint string, log *rabbitLogger) rabbit {
+func initialize(endpoint string, log *rabbitLogger, logLevel LogLevel) rabbit {
 	conn, err := amqp.Dial(endpoint)
 	checkError(err, "error during connection", log)
 	go func() {
@@ -28,7 +29,7 @@ func initialize(endpoint string, log *rabbitLogger) rabbit {
 		}
 	}()
 
-	return rabbit{conn, log}
+	return rabbit{conn, log, logLevel}
 }
 
 func (r *rabbit) close() {

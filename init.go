@@ -2,8 +2,8 @@ package rabbit
 
 var _r rabbit
 
-func Initialize(log *rabbitLogger, endpoint string) {
-	_r = initialize(endpoint, log)
+func Initialize(log *rabbitLogger, endpoint string, logLevel LogLevel) {
+	_r = initialize(endpoint, log, logLevel)
 }
 
 func TopologyConfiguration() *topology {
