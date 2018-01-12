@@ -1,6 +1,8 @@
 package rabbit
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"sync/atomic"
@@ -9,17 +11,21 @@ import (
 	"github.com/streadway/amqp"
 )
 
+type IProducer interface {
+	Send(message interface{}, routingKey, messageID string, header map[string]interface{},
+		contentType ContentType) error
+}
+
 type producer struct {
 	numberOfProducers int
 	channels          []*amqp.Channel
 	roundRobin        int32
 	exchangeName      string
 	deliveryMode      DeliveryMode
+	log               *rabbitLogger
 }
 
-var _producer producer
-
-func (r *rabbit) configureProducer(numberOfProducers int, exchangeName string, deliveryMode DeliveryMode) {
+func (r *rabbit) configureProducer(numberOfProducers int, exchangeName string, deliveryMode DeliveryMode) IProducer {
 	if numberOfProducers < 1 {
 		msg := "numberOfProducers is less than 1"
 		r.log.err(msg)
@@ -51,7 +57,7 @@ func (r *rabbit) configureProducer(numberOfProducers int, exchangeName string, d
 		}()
 	}
 
-	_producer = producer{numberOfProducers, channels, 0, exchangeName, deliveryMode}
+	return &producer{numberOfProducers, channels, 0, exchangeName, deliveryMode, r.log}
 }
 
 func (p *producer) getChannel() *amqp.Channel {
@@ -59,15 +65,29 @@ func (p *producer) getChannel() *amqp.Channel {
 	return p.channels[int(i)%p.numberOfProducers]
 }
 
-func (p *producer) send(message interface{}, routingKey, messageID string, header map[string]interface{}, contentType ContentType) error {
+func (p *producer) Send(message interface{}, routingKey, messageID string, header map[string]interface{}, contentType ContentType) error {
 	channel := p.getChannel()
-	err := channel.Publish(p.exchangeName, routingKey, false, false, amqp.Publishing{
+	serialized, err := encode(message, contentType)
+	checkError(err, "json serializer error", p.log)
+
+	pErr := channel.Publish(p.exchangeName, routingKey, false, false, amqp.Publishing{
 		Headers:      header,
 		ContentType:  string(contentType),
 		DeliveryMode: uint8(p.deliveryMode),
 		MessageId:    messageID,
 		Timestamp:    time.Now().UTC(),
 		Type:         reflect.TypeOf(message).String(),
+		Body:         serialized,
 	})
-	return err
+	return pErr
+}
+
+func encode(message interface{}, contentType ContentType) ([]byte, error) {
+	switch contentType {
+	case Json:
+		serialized, err := json.Marshal(message)
+		return serialized, err
+	default:
+		return nil, errors.New("unmapped content type")
+	}
 }

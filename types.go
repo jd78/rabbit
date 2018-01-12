@@ -16,14 +16,13 @@ func CreateLogger(info logger, err logger, fatal logger, warn logger) *rabbitLog
 type ContentType string
 
 const (
-	text     ContentType = "text"
-	json     ContentType = "json"
-	protobuf ContentType = "protobuf"
+	Json     ContentType = "json"
+	Protobuf ContentType = "protobuf"
 )
 
 type DeliveryMode uint8
 
 const (
-	transient  DeliveryMode = 0
-	persistent DeliveryMode = 1
+	Transient  DeliveryMode = 0
+	Persistent DeliveryMode = 1
 )
