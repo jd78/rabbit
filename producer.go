@@ -26,9 +26,12 @@ type producer struct {
 	deliveryMode      DeliveryMode
 	log               *rabbitLogger
 	logLevel          LogLevel
+	confirmPublish    bool
+	confirms          []chan amqp.Confirmation
 }
 
-func (r *rabbit) configureProducer(numberOfProducers int, exchangeName string, deliveryMode DeliveryMode) IProducer {
+func (r *rabbit) configureProducer(numberOfProducers int, exchangeName string, deliveryMode DeliveryMode,
+	confirmPublish bool) IProducer {
 	if numberOfProducers < 1 {
 		msg := "numberOfProducers is less than 1"
 		r.log.err(msg)
@@ -36,11 +39,18 @@ func (r *rabbit) configureProducer(numberOfProducers int, exchangeName string, d
 	}
 
 	channels := make([]*amqp.Channel, numberOfProducers, numberOfProducers)
+	confirms := make([]chan amqp.Confirmation, numberOfProducers, numberOfProducers)
 	for i := 0; i < numberOfProducers; i++ {
 		channel, err := r.connection.Channel()
 
 		checkError(err, "Error creating the producing channel", r.log)
 		channels[i] = channel
+
+		if confirmPublish {
+			confirms[i] = channel.NotifyPublish(make(chan amqp.Confirmation, 1))
+			err := channel.Confirm(false)
+			checkError(err, "failed to create channel confirmation", r.log)
+		}
 
 		go func() {
 			ch := make(chan *amqp.Error)
@@ -60,18 +70,20 @@ func (r *rabbit) configureProducer(numberOfProducers int, exchangeName string, d
 		}()
 	}
 
-	return &producer{numberOfProducers, channels, 0, exchangeName, deliveryMode, r.log, r.logLevel}
+	return &producer{numberOfProducers, channels, 0, exchangeName, deliveryMode, r.log, r.logLevel, confirmPublish,
+		confirms}
 }
 
-func (p *producer) getChannel() *amqp.Channel {
-	i := atomic.AddInt32(&p.roundRobin, 1)
-	return p.channels[int(i)%p.numberOfProducers]
+func (p *producer) getNext() int {
+	return int(atomic.AddInt32(&p.roundRobin, 1))
 }
 
 //Send a message.
 //messageType: if empty the message type will be reflected from the message
 func (p *producer) Send(message interface{}, routingKey, messageID string, messageType string, header map[string]interface{}, contentType ContentType) error {
-	channel := p.getChannel()
+	i := p.getNext()
+	channel := p.channels[i%p.numberOfProducers]
+
 	serialized, err := serialize(message, contentType)
 	checkError(err, "json serializer error", p.log)
 
@@ -92,7 +104,20 @@ func (p *producer) Send(message interface{}, routingKey, messageID string, messa
 		Type:         mt,
 		Body:         serialized,
 	})
-	return pErr
+
+	if pErr != nil {
+		return pErr
+	}
+
+	if p.confirmPublish {
+		if confirmed := <-p.confirms[i]; confirmed.Ack {
+			return nil
+		}
+
+		return errors.New("unable to publish")
+	}
+
+	return nil
 }
 
 func serialize(message interface{}, contentType ContentType) ([]byte, error) {
