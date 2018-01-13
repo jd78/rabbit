@@ -8,11 +8,13 @@ import (
 	"sync/atomic"
 	"time"
 
+	pattern "github.com/jd78/gopatternmatching"
+
 	"github.com/streadway/amqp"
 )
 
 type IProducer interface {
-	Send(message interface{}, routingKey, messageID string, header map[string]interface{},
+	Send(message interface{}, routingKey, messageID, messageType string, header map[string]interface{},
 		contentType ContentType) error
 }
 
@@ -66,13 +68,19 @@ func (p *producer) getChannel() *amqp.Channel {
 	return p.channels[int(i)%p.numberOfProducers]
 }
 
-func (p *producer) Send(message interface{}, routingKey, messageID string, header map[string]interface{}, contentType ContentType) error {
+//Send a message.
+//messageType: if empty the message type will be reflected from the message
+func (p *producer) Send(message interface{}, routingKey, messageID string, messageType string, header map[string]interface{}, contentType ContentType) error {
 	channel := p.getChannel()
 	serialized, err := serialize(message, contentType)
 	checkError(err, "json serializer error", p.log)
-	messageType := reflect.TypeOf(message).String()
+
+	mt := pattern.ResultMatch(messageType).
+		WhenValue("", func() interface{} { return messageType }).
+		ResultOrDefault(reflect.TypeOf(message).String()).(string)
+
 	if p.logLevel >= Debug {
-		p.log.debug(fmt.Sprintf("Sending Message %s: %s", messageType, serialized))
+		p.log.debug(fmt.Sprintf("Sending Message %s: %s", mt, serialized))
 	}
 
 	pErr := channel.Publish(p.exchangeName, routingKey, false, false, amqp.Publishing{
@@ -81,7 +89,7 @@ func (p *producer) Send(message interface{}, routingKey, messageID string, heade
 		DeliveryMode: uint8(p.deliveryMode),
 		MessageId:    messageID,
 		Timestamp:    time.Now().UTC(),
-		Type:         messageType,
+		Type:         mt,
 		Body:         serialized,
 	})
 	return pErr
