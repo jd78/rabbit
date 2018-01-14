@@ -101,8 +101,8 @@ func send(s *sendMessage) {
 	checkError(err, "json serializer error", s.producer.log)
 
 	mt := pattern.ResultMatch(s.messageType).
-		WhenValue("", func() interface{} { return s.messageType }).
-		ResultOrDefault(reflect.TypeOf(s.message).String()).(string)
+		WhenValue("", func() interface{} { return reflect.TypeOf(s.message).String() }).
+		ResultOrDefault(s.messageType).(string)
 
 	if s.producer.logLevel >= Debug {
 		s.producer.log.debug(fmt.Sprintf("Sending Message %s: %s", mt, serialized))

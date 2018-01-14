@@ -13,3 +13,7 @@ func TopologyConfiguration() *topology {
 func ConfigureProducer(numberOfProducers int, exchangeName string, deliveryMode DeliveryMode, confirmPublish bool) IProducer {
 	return _r.configureProducer(numberOfProducers, exchangeName, deliveryMode, confirmPublish)
 }
+
+func ConfigureConsumer() IConsumer {
+	return _r.configureConsumer()
+}
