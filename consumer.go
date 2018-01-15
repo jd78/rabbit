@@ -87,14 +87,14 @@ func (c *consumer) StartConsuming(queue string, ack, activePassive bool, concurr
 	maybeAckMessage := func(m amqp.Delivery) {
 		if ack {
 			err := m.Ack(false)
-			checkErrorLight(err, "Could not ack the message, it will be eventually requeued", c.log)
+			checkErrorLight(err, fmt.Sprintf("MessageId=%s, CorrelationId=%s, could not ack the message, it will be eventually requeued", m.MessageId, m.CorrelationId), c.log)
 		}
 	}
 
 	maybeNackMessage := func(m amqp.Delivery) {
 		if ack {
 			err := m.Nack(false, true)
-			checkErrorLight(err, "Could not nack the message, it will be eventually requeued", c.log)
+			checkErrorLight(err, fmt.Sprintf("MessageId=%s, CorrelationId=%s, could not nack the message, it will be eventually requeued", m.MessageId, m.CorrelationId), c.log)
 		}
 	}
 
@@ -109,7 +109,7 @@ func (c *consumer) StartConsuming(queue string, ack, activePassive bool, concurr
 				handler := c.handlers[w.Type]
 				obj, err := deserialize(w.Body, ContentType(w.ContentType), c.types[w.Type])
 				if err != nil {
-					c.log.err(fmt.Sprintf("MessageID=%s, could not deserialize the message, requeueing...", w.MessageId))
+					c.log.err(fmt.Sprintf("MessageID=%s, CorrelationId=%s, could not deserialize the message, requeueing...", w.MessageId, w.CorrelationId))
 					maybeNackMessage(w)
 				}
 				handler(obj) //TODO implement response
