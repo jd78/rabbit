@@ -2,23 +2,25 @@ package rabbit
 
 import (
 	"encoding/json"
-	"errors"
 	"reflect"
 )
 
 func serialize(message interface{}, contentType ContentType) ([]byte, error) {
-	switch contentType {
-	case Json:
+	serializeJson := func() ([]byte, error) {
 		serialized, err := json.Marshal(message)
 		return serialized, err
-	default:
-		return nil, errors.New("unmapped content type")
+	}
+
+	switch contentType {
+	case Json:
+		return serializeJson()
+	default: //use json
+		return serializeJson()
 	}
 }
 
 func deserialize(message []byte, contentType ContentType, concreteType reflect.Type) (interface{}, error) {
-	switch contentType {
-	case Json:
+	deserializeJson := func() (interface{}, error) {
 		pointer := reflect.New(concreteType).Interface()
 		err := json.Unmarshal(message, &pointer)
 		if err != nil {
@@ -26,7 +28,12 @@ func deserialize(message []byte, contentType ContentType, concreteType reflect.T
 		}
 		noPointer := reflect.Indirect(reflect.ValueOf(pointer)).Interface()
 		return noPointer, nil
+	}
+
+	switch contentType {
+	case Json:
+		return deserializeJson()
 	default:
-		return nil, errors.New("unmapped content type")
+		return deserializeJson()
 	}
 }
