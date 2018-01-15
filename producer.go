@@ -13,7 +13,7 @@ import (
 )
 
 type IProducer interface {
-	Send(message interface{}, routingKey, messageID, messageType string, header map[string]interface{},
+	Send(message interface{}, routingKey, messageID, correlationId, messageType string, header map[string]interface{},
 		contentType ContentType) error
 }
 
@@ -27,6 +27,7 @@ type sendMessage struct {
 	responseChannel *chan error
 	producer        *producer
 	producerIndex   int
+	correlationId   string
 }
 
 type producer struct {
@@ -108,13 +109,14 @@ func send(s *sendMessage) {
 	}
 
 	pErr := s.producer.channels[s.producerIndex].Publish(s.producer.exchangeName, s.routingKey, false, false, amqp.Publishing{
-		Headers:      s.header,
-		ContentType:  string(s.contentType),
-		DeliveryMode: uint8(s.producer.deliveryMode),
-		MessageId:    s.messageID,
-		Timestamp:    time.Now().UTC(),
-		Type:         mt,
-		Body:         serialized,
+		Headers:       s.header,
+		ContentType:   string(s.contentType),
+		DeliveryMode:  uint8(s.producer.deliveryMode),
+		MessageId:     s.messageID,
+		Timestamp:     time.Now().UTC(),
+		Type:          mt,
+		Body:          serialized,
+		CorrelationId: s.correlationId,
 	})
 
 	if pErr != nil {
@@ -141,7 +143,7 @@ func (p *producer) getNext() int {
 
 //Send a message.
 //messageType: if empty the message type will be reflected from the message
-func (p *producer) Send(message interface{}, routingKey, messageID, messageType string, header map[string]interface{}, contentType ContentType) error {
+func (p *producer) Send(message interface{}, routingKey, messageID, correlationId, messageType string, header map[string]interface{}, contentType ContentType) error {
 	i := p.getNext() % p.numberOfProducers
 	response := make(chan error, 1)
 
@@ -157,6 +159,7 @@ func (p *producer) Send(message interface{}, routingKey, messageID, messageType 
 		producer:        p,
 		responseChannel: &response,
 		routingKey:      routingKey,
+		correlationId:   correlationId,
 	}
 
 	p.producers[i] <- s

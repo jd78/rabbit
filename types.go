@@ -37,3 +37,13 @@ const (
 	Info
 	Debug
 )
+
+type HandlerResponse int
+
+const (
+	Completed HandlerResponse = iota
+	RequeueInHead
+	RequeueInTail
+	RejectMessage
+	Retry
+)

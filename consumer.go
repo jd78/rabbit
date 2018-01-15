@@ -10,7 +10,7 @@ import (
 	"github.com/streadway/amqp"
 )
 
-type Handler func(message interface{})
+type Handler func(message interface{}) HandlerResponse
 
 type IConsumer interface {
 	AddHandler(messageType string, concreteType reflect.Type, handler Handler)
@@ -69,6 +69,8 @@ func (c *consumer) AddHandler(messageType string, concreteType reflect.Type, han
 	c.types[messageType] = concreteType
 }
 
+//StartConsuming will start a new consumer
+//concurrentConsumers will create concurrent go routines that will read from the delivery rabbit channel
 func (c *consumer) StartConsuming(queue string, ack, activePassive bool, concurrentConsumers int, args map[string]interface{}) string {
 	if c.consumerRunning {
 		err := errors.New("Consumer already running, please configure a new consumer for concurrent processing")
@@ -101,7 +103,7 @@ func (c *consumer) StartConsuming(queue string, ack, activePassive bool, concurr
 			for w := range work {
 				if !c.handlerExists(w.Type) {
 					maybeAckMessage(w)
-					return
+					continue
 				}
 
 				handler := c.handlers[w.Type]
@@ -110,7 +112,7 @@ func (c *consumer) StartConsuming(queue string, ack, activePassive bool, concurr
 					c.log.err(fmt.Sprintf("MessageID=%s, could not deserialize the message, requeueing...", w.MessageId))
 					maybeNackMessage(w)
 				}
-				handler(obj) //TODO check error
+				handler(obj) //TODO implement response
 				maybeAckMessage(w)
 			}
 		}(delivery)
