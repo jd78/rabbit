@@ -11,3 +11,9 @@ func checkError(err error, additionalData string, lg *rabbitLogger) {
 		panic(l)
 	}
 }
+
+func checkErrorLight(err error, additionalData string, lg *rabbitLogger) {
+	if err != nil {
+		lg.warn(fmt.Sprintf("%s: %s", additionalData, err.Error()))
+	}
+}

@@ -75,32 +75,43 @@ func (c *consumer) StartConsuming(queue string, ack, activePassive bool, concurr
 		checkError(err, "Error starting the consumer", c.log)
 	}
 
-	b := make([]byte, 4) //equals 8 charachters
+	b := make([]byte, 4)
 	rand.Read(b)
 	s := hex.EncodeToString(b)
 
 	delivery, err := c.channel.Consume(queue, s, !ack, activePassive, false, false, args)
 	checkError(err, "Error starting the consumer", c.log)
 
+	maybeAckMessage := func(m amqp.Delivery) {
+		if ack {
+			err := m.Ack(false)
+			checkErrorLight(err, "Could not ack the message, it will be eventually requeued", c.log)
+		}
+	}
+
+	maybeNackMessage := func(m amqp.Delivery) {
+		if ack {
+			err := m.Nack(false, true)
+			checkErrorLight(err, "Could not nack the message, it will be eventually requeued", c.log)
+		}
+	}
+
 	for i := 0; i < concurrentConsumers; i++ {
 		go func(work <-chan amqp.Delivery) {
 			for w := range work {
 				if !c.handlerExists(w.Type) {
-					if ack {
-						w.Ack(false) //TODO error
-					}
+					maybeAckMessage(w)
 					return
 				}
 
 				handler := c.handlers[w.Type]
 				obj, err := deserialize(w.Body, ContentType(w.ContentType), c.types[w.Type])
 				if err != nil {
-					//TODO!!
+					c.log.err(fmt.Sprintf("MessageID=%s, could not deserialize the message, requeueing...", w.MessageId))
+					maybeNackMessage(w)
 				}
 				handler(obj) //TODO check error
-				if ack {
-					w.Ack(false) //TODO error
-				}
+				maybeAckMessage(w)
 			}
 		}(delivery)
 	}
