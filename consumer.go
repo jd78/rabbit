@@ -1,11 +1,10 @@
 package rabbit
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"reflect"
+	"time"
 
 	"github.com/streadway/amqp"
 )
@@ -14,7 +13,8 @@ type Handler func(message interface{}) HandlerResponse
 
 type IConsumer interface {
 	AddHandler(messageType string, concreteType reflect.Type, handler Handler)
-	StartConsuming(queue string, ack, activePassive bool, concurrentConsumers int, args map[string]interface{}) string
+	StartConsuming(queue string, ack, activePassive bool, activePassiveRetryInterval time.Duration,
+		concurrentConsumers int, args map[string]interface{}) string
 }
 
 type consumer struct {
@@ -71,18 +71,37 @@ func (c *consumer) AddHandler(messageType string, concreteType reflect.Type, han
 
 //StartConsuming will start a new consumer
 //concurrentConsumers will create concurrent go routines that will read from the delivery rabbit channel
-func (c *consumer) StartConsuming(queue string, ack, activePassive bool, concurrentConsumers int, args map[string]interface{}) string {
+func (c *consumer) StartConsuming(queue string, ack, activePassive bool, activePassiveRetryInterval time.Duration,
+	concurrentConsumers int, args map[string]interface{}) string {
 	if c.consumerRunning {
 		err := errors.New("Consumer already running, please configure a new consumer for concurrent processing")
 		checkError(err, "Error starting the consumer", c.log)
 	}
 
-	b := make([]byte, 4)
-	rand.Read(b)
-	s := hex.EncodeToString(b)
+	if activePassive {
+		logOnce := executeOnce{}
+		for {
+			qInfo := Queues[queue]
+			q, err := c.channel.QueueDeclarePassive(qInfo.name, qInfo.durable, qInfo.autoDelete, qInfo.exclusive,
+				false, qInfo.args)
+			checkError(err, "Error declaring queue passive", c.log)
+			if q.Consumers == 0 {
+				break
+			} else {
+				logOnce.MaybeExecute(func() { c.log.info(fmt.Sprintf("Consumer passive on queue %s", queue)) })
+				time.Sleep(activePassiveRetryInterval)
+			}
+		}
+	}
 
-	delivery, err := c.channel.Consume(queue, s, !ack, activePassive, false, false, args)
+	consumerId := getUniqueId()
+
+	delivery, err := c.channel.Consume(queue, consumerId, !ack, activePassive, false, false, args)
 	checkError(err, "Error starting the consumer", c.log)
+
+	if activePassive {
+		c.log.info(fmt.Sprintf("Consumer active on queue %s", queue))
+	}
 
 	maybeAckMessage := func(m amqp.Delivery) {
 		if ack {
@@ -118,5 +137,6 @@ func (c *consumer) StartConsuming(queue string, ack, activePassive bool, concurr
 		}(delivery)
 	}
 
-	return s
+	c.consumerRunning = true
+	return consumerId
 }
