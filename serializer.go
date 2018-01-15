@@ -3,6 +3,7 @@ package rabbit
 import (
 	"encoding/json"
 	"errors"
+	"reflect"
 )
 
 func serialize(message interface{}, contentType ContentType) ([]byte, error) {
@@ -15,10 +16,11 @@ func serialize(message interface{}, contentType ContentType) ([]byte, error) {
 	}
 }
 
-func deserialize(message []byte, contentType ContentType) (interface{}, error) {
+func deserialize(message []byte, contentType ContentType, concreteType reflect.Type) (interface{}, error) {
 	switch contentType {
 	case Json:
-		var obj interface{}
+		//obj := reflect.Indirect(reflect.New(concreteType)).Interface()
+		obj := reflect.New(concreteType).Interface()
 		err := json.Unmarshal(message, &obj)
 		return obj, err
 	default:

@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"reflect"
 
 	"github.com/streadway/amqp"
 )
@@ -12,12 +13,13 @@ import (
 type Handler func(message interface{})
 
 type IConsumer interface {
-	AddHandler(messageType string, handler Handler)
+	AddHandler(messageType string, concreteType reflect.Type, handler Handler)
 	StartConsuming(queue string, ack, activePassive bool, concurrentConsumers int, args map[string]interface{}) string
 }
 
 type consumer struct {
 	handlers        map[string]Handler
+	types           map[string]reflect.Type
 	log             *rabbitLogger
 	channel         *amqp.Channel
 	consumerRunning bool
@@ -48,7 +50,8 @@ func (r *rabbit) configureConsumer(prefetch int) IConsumer {
 	}()
 
 	h := make(map[string]Handler)
-	return &consumer{h, r.log, channel, false}
+	t := make(map[string]reflect.Type)
+	return &consumer{h, t, r.log, channel, false}
 }
 
 func (c *consumer) handlerExists(messageType string) bool {
@@ -56,13 +59,14 @@ func (c *consumer) handlerExists(messageType string) bool {
 	return exists
 }
 
-func (c *consumer) AddHandler(messageType string, handler Handler) {
+func (c *consumer) AddHandler(messageType string, concreteType reflect.Type, handler Handler) {
 	if c.handlerExists(messageType) {
 		err := fmt.Sprintf("messageType %s already mapped", messageType)
 		c.log.err(err)
 		panic(err)
 	}
 	c.handlers[messageType] = handler
+	c.types[messageType] = concreteType
 }
 
 func (c *consumer) StartConsuming(queue string, ack, activePassive bool, concurrentConsumers int, args map[string]interface{}) string {
@@ -89,7 +93,7 @@ func (c *consumer) StartConsuming(queue string, ack, activePassive bool, concurr
 				}
 
 				handler := c.handlers[w.Type]
-				obj, err := deserialize(w.Body, ContentType(w.ContentType))
+				obj, err := deserialize(w.Body, ContentType(w.ContentType), c.types[w.Type])
 				if err != nil {
 					//TODO!!
 				}
