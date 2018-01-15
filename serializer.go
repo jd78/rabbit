@@ -19,10 +19,13 @@ func serialize(message interface{}, contentType ContentType) ([]byte, error) {
 func deserialize(message []byte, contentType ContentType, concreteType reflect.Type) (interface{}, error) {
 	switch contentType {
 	case Json:
-		//obj := reflect.Indirect(reflect.New(concreteType)).Interface()
-		obj := reflect.New(concreteType).Interface()
-		err := json.Unmarshal(message, &obj)
-		return obj, err
+		pointer := reflect.New(concreteType).Interface()
+		err := json.Unmarshal(message, &pointer)
+		if err != nil {
+			return nil, err
+		}
+		noPointer := reflect.Indirect(reflect.ValueOf(pointer)).Interface()
+		return noPointer, nil
 	default:
 		return nil, errors.New("unmapped content type")
 	}
