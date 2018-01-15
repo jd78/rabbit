@@ -1,7 +1,6 @@
 package rabbit
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -70,8 +69,8 @@ func (r *rabbit) configureProducer(numberOfProducers int, exchangeName string, d
 			ch := make(chan *amqp.Error)
 			channel.NotifyClose(ch)
 			err := <-ch
-			r.log.err(fmt.Sprintf("Connection lost - Error=%s", err.Error()))
-			panic("connection lost")
+			r.log.err(fmt.Sprintf("Channel closed - Error=%s", err.Error()))
+			panic("Channel closed")
 		}()
 
 		go func() {
@@ -162,14 +161,4 @@ func (p *producer) Send(message interface{}, routingKey, messageID, messageType 
 
 	p.producers[i] <- s
 	return <-response
-}
-
-func serialize(message interface{}, contentType ContentType) ([]byte, error) {
-	switch contentType {
-	case Json:
-		serialized, err := json.Marshal(message)
-		return serialized, err
-	default:
-		return nil, errors.New("unmapped content type")
-	}
 }

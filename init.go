@@ -14,6 +14,6 @@ func ConfigureProducer(numberOfProducers int, exchangeName string, deliveryMode 
 	return _r.configureProducer(numberOfProducers, exchangeName, deliveryMode, confirmPublish)
 }
 
-func ConfigureConsumer() IConsumer {
-	return _r.configureConsumer()
+func ConfigureConsumer(preferch int) IConsumer {
+	return _r.configureConsumer(preferch)
 }
