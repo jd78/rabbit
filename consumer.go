@@ -69,6 +69,18 @@ func (c *consumer) AddHandler(messageType string, concreteType reflect.Type, han
 	c.types[messageType] = concreteType
 }
 
+func (c *consumer) handle(w amqp.Delivery, ack bool) {
+	handler := c.handlers[w.Type]
+	obj, err := deserialize(w.Body, ContentType(w.ContentType), c.types[w.Type])
+	if err != nil {
+		c.log.err(fmt.Sprintf("MessageID=%s, CorrelationId=%s, could not deserialize the message, requeueing...", w.MessageId, w.CorrelationId))
+		(&envelope{&w}).maybeNackMessage(ack, c.log)
+	}
+
+	handler(obj) //TODO
+	(&envelope{&w}).maybeAckMessage(ack, c.log)
+}
+
 //StartConsuming will start a new consumer
 //concurrentConsumers will create concurrent go routines that will read from the delivery rabbit channel
 func (c *consumer) StartConsuming(queue string, ack, activePassive bool, activePassiveRetryInterval time.Duration,
@@ -103,36 +115,15 @@ func (c *consumer) StartConsuming(queue string, ack, activePassive bool, activeP
 		c.log.info(fmt.Sprintf("Consumer active on queue %s", queue))
 	}
 
-	maybeAckMessage := func(m amqp.Delivery) {
-		if ack {
-			err := m.Ack(false)
-			checkErrorLight(err, fmt.Sprintf("MessageId=%s, CorrelationId=%s, could not ack the message, it will be eventually requeued", m.MessageId, m.CorrelationId), c.log)
-		}
-	}
-
-	maybeNackMessage := func(m amqp.Delivery) {
-		if ack {
-			err := m.Nack(false, true)
-			checkErrorLight(err, fmt.Sprintf("MessageId=%s, CorrelationId=%s, could not nack the message, it will be eventually requeued", m.MessageId, m.CorrelationId), c.log)
-		}
-	}
-
 	for i := 0; i < concurrentConsumers; i++ {
 		go func(work <-chan amqp.Delivery) {
 			for w := range work {
 				if !c.handlerExists(w.Type) {
-					maybeAckMessage(w)
+					(&envelope{&w}).maybeAckMessage(ack, c.log)
 					continue
 				}
 
-				handler := c.handlers[w.Type]
-				obj, err := deserialize(w.Body, ContentType(w.ContentType), c.types[w.Type])
-				if err != nil {
-					c.log.err(fmt.Sprintf("MessageID=%s, CorrelationId=%s, could not deserialize the message, requeueing...", w.MessageId, w.CorrelationId))
-					maybeNackMessage(w)
-				}
-				handler(obj) //TODO implement response
-				maybeAckMessage(w)
+				c.handle(w, ack)
 			}
 		}(delivery)
 	}
