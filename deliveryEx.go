@@ -17,9 +17,16 @@ func (m *envelope) maybeAckMessage(ack bool, log *rabbitLogger) {
 	}
 }
 
-func (m *envelope) maybeNackMessage(ack bool, log *rabbitLogger) {
+func (m *envelope) maybeRequeueMessage(ack bool, log *rabbitLogger) {
 	if ack {
 		err := m.Nack(false, true)
+		checkErrorLight(err, fmt.Sprintf("MessageId=%s, CorrelationId=%s, could not nack the message, it will be eventually requeued", m.MessageId, m.CorrelationId), log)
+	}
+}
+
+func (m *envelope) maybeRejectMessage(ack bool, log *rabbitLogger) {
+	if ack {
+		err := m.Nack(false, false)
 		checkErrorLight(err, fmt.Sprintf("MessageId=%s, CorrelationId=%s, could not nack the message, it will be eventually requeued", m.MessageId, m.CorrelationId), log)
 	}
 }

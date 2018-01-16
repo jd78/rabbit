@@ -26,7 +26,9 @@ func checkError(err error, additionalData string, lg *rabbitLogger) {
 
 func checkErrorLight(err error, additionalData string, lg *rabbitLogger) {
 	if err != nil {
-		lg.warn(fmt.Sprintf("%s: %s", additionalData, err.Error()))
+		if lg.logLevel >= Warn {
+			lg.warn(fmt.Sprintf("%s: %s", additionalData, err.Error()))
+		}
 	}
 }
 

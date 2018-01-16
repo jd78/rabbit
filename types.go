@@ -3,15 +3,16 @@ package rabbit
 type logger func(string)
 
 type rabbitLogger struct {
-	fatal logger
-	err   logger
-	info  logger
-	warn  logger
-	debug logger
+	fatal    logger
+	err      logger
+	info     logger
+	warn     logger
+	debug    logger
+	logLevel LogLevel
 }
 
-func CreateLogger(debug, info, warn, err, fatal logger) *rabbitLogger {
-	return &rabbitLogger{fatal, err, info, warn, debug}
+func CreateLogger(debug, info, warn, err, fatal logger, logLevel LogLevel) *rabbitLogger {
+	return &rabbitLogger{fatal, err, info, warn, debug, logLevel}
 }
 
 type ContentType string
@@ -42,8 +43,7 @@ type HandlerResponse int
 
 const (
 	Completed HandlerResponse = iota
-	RequeueInHead
-	RequeueInTail
-	RejectMessage
-	Retry
+	Requeue
+	Reject
+	Err
 )

@@ -6,18 +6,16 @@ import "fmt"
 type rabbit struct {
 	connection *amqp.Connection
 	log        *rabbitLogger
-	logLevel   LogLevel
 }
 
-func initialize(endpoint string, log *rabbitLogger, logLevel LogLevel) rabbit {
+func initialize(endpoint string, log *rabbitLogger) rabbit {
 	conn, err := amqp.Dial(endpoint)
 	checkError(err, "error during connection", log)
 	go func() {
 		ch := make(chan *amqp.Error)
 		conn.NotifyClose(ch)
 		err := <-ch
-		log.err(fmt.Sprintf("Connection lost - Error=%s", err.Error()))
-		panic("connection lost")
+		checkError(err, "Connection lost!", log)
 	}()
 
 	go func() {
@@ -25,11 +23,13 @@ func initialize(endpoint string, log *rabbitLogger, logLevel LogLevel) rabbit {
 		conn.NotifyBlocked(ch)
 		for {
 			status := <-ch
-			log.warn(fmt.Sprintf("connection blocked detected - block enabled: %t, reason: %s", status.Active, status.Reason))
+			if log.logLevel >= Warn {
+				log.warn(fmt.Sprintf("connection blocked detected - block enabled: %t, reason: %s", status.Active, status.Reason))
+			}
 		}
 	}()
 
-	return rabbit{conn, log, logLevel}
+	return rabbit{conn, log}
 }
 
 func (r *rabbit) close() {

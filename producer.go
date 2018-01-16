@@ -37,7 +37,6 @@ type producer struct {
 	exchangeName      string
 	deliveryMode      DeliveryMode
 	log               *rabbitLogger
-	logLevel          LogLevel
 	confirmPublish    bool
 	confirms          []chan amqp.Confirmation
 	producers         []chan sendMessage
@@ -46,9 +45,8 @@ type producer struct {
 func (r *rabbit) configureProducer(numberOfProducers int, exchangeName string, deliveryMode DeliveryMode,
 	confirmPublish bool) IProducer {
 	if numberOfProducers < 1 {
-		msg := "numberOfProducers is less than 1"
-		r.log.err(msg)
-		panic(msg)
+		err := errors.New("numberOfProducers is less than 1")
+		checkError(err, "", r.log)
 	}
 
 	channels := make([]*amqp.Channel, numberOfProducers, numberOfProducers)
@@ -70,8 +68,7 @@ func (r *rabbit) configureProducer(numberOfProducers int, exchangeName string, d
 			ch := make(chan *amqp.Error)
 			channel.NotifyClose(ch)
 			err := <-ch
-			r.log.err(fmt.Sprintf("Channel closed - Error=%s", err.Error()))
-			panic("Channel closed")
+			checkError(err, "Channel closed!", r.log)
 		}()
 
 		go func() {
@@ -79,7 +76,9 @@ func (r *rabbit) configureProducer(numberOfProducers int, exchangeName string, d
 			channel.NotifyFlow(ch)
 			for {
 				status := <-ch
-				r.log.warn(fmt.Sprintf("channel flow detected - flow enabled: %t", status))
+				if r.log.logLevel >= Warn {
+					r.log.warn(fmt.Sprintf("channel flow detected - flow enabled: %t", status))
+				}
 			}
 		}()
 
@@ -87,16 +86,16 @@ func (r *rabbit) configureProducer(numberOfProducers int, exchangeName string, d
 		go func(i int) {
 			for {
 				s := <-producers[i]
-				send(&s)
+				send(&s, r.log.logLevel)
 			}
 		}(i)
 	}
 
-	return &producer{numberOfProducers, channels, 0, exchangeName, deliveryMode, r.log, r.logLevel, confirmPublish,
+	return &producer{numberOfProducers, channels, 0, exchangeName, deliveryMode, r.log, confirmPublish,
 		confirms, producers}
 }
 
-func send(s *sendMessage) {
+func send(s *sendMessage, logLevel LogLevel) {
 	serialized, err := serialize(s.message, s.contentType)
 	checkError(err, "json serializer error", s.producer.log)
 
@@ -104,7 +103,7 @@ func send(s *sendMessage) {
 		WhenValue("", func() interface{} { return reflect.TypeOf(s.message).String() }).
 		ResultOrDefault(s.messageType).(string)
 
-	if s.producer.logLevel >= Debug {
+	if logLevel >= Debug {
 		s.producer.log.debug(fmt.Sprintf("Sending Message %s: %s", mt, serialized))
 	}
 
