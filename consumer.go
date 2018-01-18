@@ -263,8 +263,9 @@ func (c *consumer) StartConsumingPartitions(queue string, ack, activePassive boo
 				continue
 			}
 
+			cw := w
 			part.HandleInSequence(func(done chan bool) {
-				c.handle(w, message, ack, 0, retryTimesOnError)
+				c.handle(cw, message, ack, 0, retryTimesOnError)
 				done <- true
 			}, partition{message, partitionResolver})
 		}
