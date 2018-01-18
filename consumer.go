@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sync/atomic"
 	"time"
 
+	"github.com/jd78/partitioner"
 	"github.com/streadway/amqp"
 )
 
@@ -15,6 +17,9 @@ type IConsumer interface {
 	AddHandler(messageType string, concreteType reflect.Type, handler Handler)
 	StartConsuming(queue string, ack, activePassive bool, activePassiveRetryInterval time.Duration,
 		concurrentConsumers, retryTimesOnError int, args map[string]interface{}) string
+	StartConsumingPartitions(queue string, ack, activePassive bool, activePassiveRetryInterval time.Duration,
+		concurrentConsumers, retryTimesOnError, partitions, maxWaitingTimeRetryOnPartitionFailMilliseconds int,
+		partitionResolver map[reflect.Type]func(message interface{}) int64, args map[string]interface{}) string
 }
 
 type consumer struct {
@@ -23,6 +28,22 @@ type consumer struct {
 	log             *rabbitLogger
 	channel         *amqp.Channel
 	consumerRunning bool
+}
+
+var roundrobin int64
+
+type partition struct {
+	message           interface{}
+	partitionResolver map[reflect.Type]func(message interface{}) int64
+}
+
+func (p partition) GetPartition() int64 {
+	t := reflect.TypeOf(p.message)
+	if _, exists := p.partitionResolver[t]; exists {
+		return p.partitionResolver[t](p.message)
+	}
+
+	return atomic.AddInt64(&roundrobin, 1)
 }
 
 func (r *rabbit) configureConsumer(prefetch int) IConsumer {
@@ -69,7 +90,7 @@ func (c *consumer) AddHandler(messageType string, concreteType reflect.Type, han
 	c.types[messageType] = concreteType
 }
 
-func (c *consumer) handle(w amqp.Delivery, ack bool, retried, maxRetry int) {
+func (c *consumer) handle(w amqp.Delivery, message interface{}, ack bool, retried, maxRetry int) {
 	if w.Redelivered {
 		if c.log.logLevel >= Info {
 			c.log.info(fmt.Sprintf("MessageID=%s, CorrelationId=%s, has been redelivered",
@@ -77,16 +98,8 @@ func (c *consumer) handle(w amqp.Delivery, ack bool, retried, maxRetry int) {
 		}
 	}
 	handler := c.handlers[w.Type]
-	obj, err := deserialize(w.Body, ContentType(w.ContentType), c.types[w.Type])
-	if err != nil {
-		if c.log.logLevel >= Error {
-			c.log.err(fmt.Sprintf("MessageID=%s, CorrelationId=%s, could not deserialize the message, requeueing...",
-				w.MessageId, w.CorrelationId))
-		}
-		(&envelope{&w}).maybeRequeueMessage(ack, c.log)
-	}
 
-	response := handler(obj)
+	response := handler(message)
 	switch response {
 	case Completed:
 		if c.log.logLevel >= Debug {
@@ -119,9 +132,20 @@ func (c *consumer) handle(w amqp.Delivery, ack bool, retried, maxRetry int) {
 				c.log.debug(fmt.Sprintf("MessageId=%s, CorrelationId=%s, retry=%d times, retrying due to error...",
 					w.MessageId, w.CorrelationId, retried))
 			}
-			c.handle(w, ack, retried+1, maxRetry)
+			c.handle(w, message, ack, retried+1, maxRetry)
 		}
 	}
+}
+
+func (c *consumer) deserializeMessage(w amqp.Delivery) (interface{}, error) {
+	obj, err := deserialize(w.Body, ContentType(w.ContentType), c.types[w.Type])
+	if err != nil {
+		if c.log.logLevel >= Error {
+			c.log.err(fmt.Sprintf("MessageID=%s, CorrelationId=%s, could not deserialize the message, requeueing...",
+				w.MessageId, w.CorrelationId))
+		}
+	}
+	return obj, err
 }
 
 //StartConsuming will start a new consumer
@@ -170,10 +194,81 @@ func (c *consumer) StartConsuming(queue string, ack, activePassive bool, activeP
 					continue
 				}
 
-				c.handle(w, ack, 0, retryTimesOnError)
+				message, err := c.deserializeMessage(w)
+				if err != nil {
+					(&envelope{&w}).maybeRequeueMessage(ack, c.log)
+					continue
+				}
+
+				c.handle(w, message, ack, 0, retryTimesOnError)
 			}
 		}(delivery)
 	}
+
+	c.consumerRunning = true
+	return consumerId
+}
+
+//StartConsuming will start a new consumer
+//concurrentConsumers will create concurrent go routines that will read from the delivery rabbit channel
+func (c *consumer) StartConsumingPartitions(queue string, ack, activePassive bool, activePassiveRetryInterval time.Duration,
+	concurrentConsumers, retryTimesOnError, partitions, maxWaitingTimeRetryOnPartitionFailMilliseconds int,
+	partitionResolver map[reflect.Type]func(message interface{}) int64, args map[string]interface{}) string {
+	if c.consumerRunning {
+		err := errors.New("Consumer already running, please configure a new consumer for concurrent processing")
+		checkError(err, "Error starting the consumer", c.log)
+	}
+
+	if activePassive {
+		logOnce := executeOnce{}
+		for {
+			qInfo := Queues[queue]
+			q, err := c.channel.QueueDeclarePassive(qInfo.name, qInfo.durable, qInfo.autoDelete, qInfo.exclusive,
+				false, qInfo.args)
+			checkError(err, "Error declaring queue passive", c.log)
+			if q.Consumers == 0 {
+				break
+			} else {
+				if c.log.logLevel >= Info {
+					logOnce.MaybeExecute(func() { c.log.info(fmt.Sprintf("Consumer passive on queue %s", queue)) })
+				}
+				time.Sleep(activePassiveRetryInterval)
+			}
+		}
+	}
+
+	consumerId := getUniqueId()
+
+	delivery, err := c.channel.Consume(queue, consumerId, !ack, activePassive, false, false, args)
+	checkError(err, "Error starting the consumer", c.log)
+
+	if activePassive {
+		if c.log.logLevel >= Info {
+			c.log.info(fmt.Sprintf("Consumer active on queue %s", queue))
+		}
+	}
+
+	part := partitioner.CreatePartitioner(partitions, maxWaitingTimeRetryOnPartitionFailMilliseconds)
+
+	go func(work <-chan amqp.Delivery) {
+		for w := range work {
+			if !c.handlerExists(w.Type) {
+				(&envelope{&w}).maybeAckMessage(ack, c.log)
+				continue
+			}
+
+			message, err := c.deserializeMessage(w)
+			if err != nil {
+				(&envelope{&w}).maybeRequeueMessage(ack, c.log)
+				continue
+			}
+
+			part.HandleInSequence(func(done chan bool) {
+				c.handle(w, message, ack, 0, retryTimesOnError)
+				done <- true
+			}, partition{message, partitionResolver})
+		}
+	}(delivery)
 
 	c.consumerRunning = true
 	return consumerId
