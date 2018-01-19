@@ -27,7 +27,7 @@ type consumer struct {
 	types           map[string]reflect.Type
 	log             *rabbitLogger
 	channel         *amqp.Channel
-	consumerRunning bool
+	consumerRunning map[string]bool
 }
 
 var roundrobin int64
@@ -73,7 +73,7 @@ func (r *rabbit) configureConsumer(prefetch int) IConsumer {
 
 	h := make(map[string]Handler)
 	t := make(map[string]reflect.Type)
-	return &consumer{h, t, r.log, channel, false}
+	return &consumer{h, t, r.log, channel, make(map[string]bool)}
 }
 
 func (c *consumer) handlerExists(messageType string) bool {
@@ -158,10 +158,19 @@ func (c *consumer) deserializeMessage(w amqp.Delivery) (interface{}, error) {
 
 //StartConsuming will start a new consumer
 //concurrentConsumers will create concurrent go routines that will read from the delivery rabbit channel
+//queue: queue name
+//ack: true enables ack
+//enableReties: enable message retries in case of handler error (will preserve the order)
+//activePassive: enables acrive and sleepy passive consumers
+//activePassiveRetryInterval: time interval checking if the queue has a consumer
+//requeueTimeIntervalOnError: time interval requeueing a message in case of handler error (message ordering will be lost). Takes effect if enableRetries is false
+//concurrentConsumers: number of consumers
+//retryTimesOnError: number of retries before discarding a message. Takes effect if enableRetries is true
+//args: consumer args
 func (c *consumer) StartConsuming(queue string, ack, activePassive, enableRetries bool, activePassiveRetryInterval, requeueTimeIntervalOnError time.Duration,
 	concurrentConsumers, retryTimesOnError int, args map[string]interface{}) string {
-	if c.consumerRunning {
-		err := errors.New("Consumer already running, please configure a new consumer for concurrent processing")
+	if _, exists := c.consumerRunning[queue]; exists {
+		err := errors.New("Consumer already running, please configure a new consumer for concurrent processing or set the concurrentConsumers")
 		checkError(err, "Error starting the consumer", c.log)
 	}
 
@@ -213,17 +222,29 @@ func (c *consumer) StartConsuming(queue string, ack, activePassive, enableRetrie
 		}(delivery)
 	}
 
-	c.consumerRunning = true
+	c.consumerRunning[queue] = true
 	return consumerId
 }
 
 //StartConsuming will start a new consumer
 //concurrentConsumers will create concurrent go routines that will read from the delivery rabbit channel
+//queue: queue name
+//ack: true enables ack
+//enableReties: enable message retries in case of handler error (will preserve the order)
+//activePassive: enables acrive and sleepy passive consumers
+//activePassiveRetryInterval: time interval checking if the queue has a consumer
+//requeueTimeIntervalOnError: time interval requeueing a message in case of handler error (message ordering will be lost). Takes effect if enableRetries is false
+//maxWaitingTimeRetryIntervalOnPartitionError: Sleep time between retries in case of handler error
+//concurrentConsumers: number of consumers
+//retryTimesOnError: number of retries before discarding a message. Takes effect if enableRetries is true
+//partitions: number of consurrent/consistent partitions
+//partitionResolver: map[reflect.Type]func(message interface{}) int64, for each message type specify a function that will return the key used to partition
+//args: consumer args
 func (c *consumer) StartConsumingPartitions(queue string, ack, activePassive, enableRetries bool, activePassiveRetryInterval,
 	requeueTimeIntervalOnError, maxWaitingTimeRetryIntervalOnPartitionError time.Duration,
 	retryTimesOnError, partitions int, partitionResolver map[reflect.Type]func(message interface{}) int64, args map[string]interface{}) string {
-	if c.consumerRunning {
-		err := errors.New("Consumer already running, please configure a new consumer for concurrent processing")
+	if _, exists := c.consumerRunning[queue]; exists {
+		err := errors.New("Consumer already running, please configure a new consumer for concurrent processing or set partitions")
 		checkError(err, "Error starting the consumer", c.log)
 	}
 
@@ -279,6 +300,6 @@ func (c *consumer) StartConsumingPartitions(queue string, ack, activePassive, en
 		}
 	}(delivery)
 
-	c.consumerRunning = true
+	c.consumerRunning[queue] = true
 	return consumerId
 }
