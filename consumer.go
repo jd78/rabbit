@@ -15,16 +15,18 @@ type Handler func(message interface{}) HandlerResponse
 
 type IConsumer interface {
 	AddHandler(messageType string, concreteType reflect.Type, handler Handler)
-	StartConsuming(queue string, ack, activePassive, enableRetries bool, activePassiveRetryInterval, requeueTimeIntervalOnError time.Duration,
-		concurrentConsumers, retryTimesOnError int, args map[string]interface{}) string
-	StartConsumingPartitions(queue string, ack, activePassive, enableRetries bool, activePassiveRetryInterval, requeueTimeIntervalOnError,
-		maxWaitingTimeRetryIntervalOnPartitionError time.Duration, retryTimesOnError, partitions int,
+	AddRetryHandler(messageType string, concreteType reflect.Type, handler Handler, maxRetries int)
+	StartConsuming(queue string, ack, activePassive bool, activePassiveRetryInterval, requeueTimeIntervalOnError time.Duration,
+		concurrentConsumers int, args map[string]interface{}) string
+	StartConsumingPartitions(queue string, ack, activePassive bool, activePassiveRetryInterval, requeueTimeIntervalOnError,
+		maxWaitingTimeRetryIntervalOnPartitionError time.Duration, partitions int,
 		partitionResolver map[reflect.Type]func(message interface{}) int64, args map[string]interface{}) string
 }
 
 type consumer struct {
 	handlers        map[string]Handler
 	types           map[string]reflect.Type
+	maxRetries      map[string]int
 	log             *rabbitLogger
 	channel         *amqp.Channel
 	consumerRunning map[string]bool
@@ -73,12 +75,18 @@ func (r *rabbit) configureConsumer(prefetch int) IConsumer {
 
 	h := make(map[string]Handler)
 	t := make(map[string]reflect.Type)
-	return &consumer{h, t, r.log, channel, make(map[string]bool)}
+	retries := make(map[string]int)
+	return &consumer{h, t, retries, r.log, channel, make(map[string]bool)}
 }
 
 func (c *consumer) handlerExists(messageType string) bool {
 	_, exists := c.handlers[messageType]
 	return exists
+}
+
+func (c *consumer) getMaxRetries(messageType string) (bool, int) {
+	maxRetries, exists := c.maxRetries[messageType]
+	return exists, maxRetries
 }
 
 func (c *consumer) AddHandler(messageType string, concreteType reflect.Type, handler Handler) {
@@ -90,7 +98,18 @@ func (c *consumer) AddHandler(messageType string, concreteType reflect.Type, han
 	c.types[messageType] = concreteType
 }
 
-func (c *consumer) handle(w amqp.Delivery, message interface{}, ack, enableRetries bool, retried, maxRetry int,
+//maxRetries: number of retries before discarding a message. Takes effect if enableRetries is true
+func (c *consumer) AddRetryHandler(messageType string, concreteType reflect.Type, handler Handler, maxRetries int) {
+	if c.handlerExists(messageType) {
+		err := fmt.Errorf("messageType %s already mapped", messageType)
+		checkError(err, "", c.log)
+	}
+	c.handlers[messageType] = handler
+	c.types[messageType] = concreteType
+	c.maxRetries[messageType] = maxRetries
+}
+
+func (c *consumer) handle(w amqp.Delivery, message interface{}, ack bool, retried int,
 	requeueTimeMillisecondsOnError time.Duration) {
 	if w.Redelivered {
 		if c.log.logLevel >= Info {
@@ -121,20 +140,21 @@ func (c *consumer) handle(w amqp.Delivery, message interface{}, ack, enableRetri
 		}
 		(&envelope{&w}).maybeRejectMessage(ack, c.log)
 	case Err:
-		if enableRetries {
-			if retried > maxRetry-1 {
+		retryEnabled, maxRetries := c.getMaxRetries(w.Type)
+		if retryEnabled {
+			if retried > maxRetries-1 {
 				if c.log.logLevel >= Warn {
 					c.log.warn(fmt.Sprintf("MessageId=%s, CorrelationId=%s, max retry reached, rejecting message...",
 						w.MessageId, w.CorrelationId))
 				}
 				(&envelope{&w}).maybeRejectMessage(ack, c.log)
 			} else {
-				time.Sleep(time.Duration(retried*200) * time.Microsecond)
+				time.Sleep(time.Duration(retried*100) * time.Millisecond)
 				if c.log.logLevel >= Debug {
 					c.log.debug(fmt.Sprintf("MessageId=%s, CorrelationId=%s, retry=%d times, retrying due to error...",
 						w.MessageId, w.CorrelationId, retried))
 				}
-				c.handle(w, message, ack, enableRetries, retried+1, maxRetry, requeueTimeMillisecondsOnError)
+				c.handle(w, message, ack, retried+1, requeueTimeMillisecondsOnError)
 			}
 		} else {
 			go func() {
@@ -160,15 +180,13 @@ func (c *consumer) deserializeMessage(w amqp.Delivery) (interface{}, error) {
 //concurrentConsumers will create concurrent go routines that will read from the delivery rabbit channel
 //queue: queue name
 //ack: true enables ack
-//enableReties: enable message retries in case of handler error (will preserve the order)
 //activePassive: enables acrive and sleepy passive consumers
 //activePassiveRetryInterval: time interval checking if the queue has a consumer
 //requeueTimeIntervalOnError: time interval requeueing a message in case of handler error (message ordering will be lost). Takes effect if enableRetries is false
 //concurrentConsumers: number of consumers
-//retryTimesOnError: number of retries before discarding a message. Takes effect if enableRetries is true
 //args: consumer args
-func (c *consumer) StartConsuming(queue string, ack, activePassive, enableRetries bool, activePassiveRetryInterval, requeueTimeIntervalOnError time.Duration,
-	concurrentConsumers, retryTimesOnError int, args map[string]interface{}) string {
+func (c *consumer) StartConsuming(queue string, ack, activePassive bool, activePassiveRetryInterval, requeueTimeIntervalOnError time.Duration,
+	concurrentConsumers int, args map[string]interface{}) string {
 	if _, exists := c.consumerRunning[queue]; exists {
 		err := errors.New("Consumer already running, please configure a new consumer for concurrent processing or set the concurrentConsumers")
 		checkError(err, "Error starting the consumer", c.log)
@@ -217,7 +235,7 @@ func (c *consumer) StartConsuming(queue string, ack, activePassive, enableRetrie
 					continue
 				}
 
-				c.handle(w, message, ack, enableRetries, 0, retryTimesOnError, requeueTimeIntervalOnError)
+				c.handle(w, message, ack, 0, requeueTimeIntervalOnError)
 			}
 		}(delivery)
 	}
@@ -230,19 +248,17 @@ func (c *consumer) StartConsuming(queue string, ack, activePassive, enableRetrie
 //concurrentConsumers will create concurrent go routines that will read from the delivery rabbit channel
 //queue: queue name
 //ack: true enables ack
-//enableReties: enable message retries in case of handler error (will preserve the order)
 //activePassive: enables acrive and sleepy passive consumers
 //activePassiveRetryInterval: time interval checking if the queue has a consumer
 //requeueTimeIntervalOnError: time interval requeueing a message in case of handler error (message ordering will be lost). Takes effect if enableRetries is false
 //maxWaitingTimeRetryIntervalOnPartitionError: Sleep time between retries in case of handler error
 //concurrentConsumers: number of consumers
-//retryTimesOnError: number of retries before discarding a message. Takes effect if enableRetries is true
 //partitions: number of consurrent/consistent partitions
 //partitionResolver: map[reflect.Type]func(message interface{}) int64, for each message type specify a function that will return the key used to partition
 //args: consumer args
-func (c *consumer) StartConsumingPartitions(queue string, ack, activePassive, enableRetries bool, activePassiveRetryInterval,
+func (c *consumer) StartConsumingPartitions(queue string, ack, activePassive bool, activePassiveRetryInterval,
 	requeueTimeIntervalOnError, maxWaitingTimeRetryIntervalOnPartitionError time.Duration,
-	retryTimesOnError, partitions int, partitionResolver map[reflect.Type]func(message interface{}) int64, args map[string]interface{}) string {
+	partitions int, partitionResolver map[reflect.Type]func(message interface{}) int64, args map[string]interface{}) string {
 	if _, exists := c.consumerRunning[queue]; exists {
 		err := errors.New("Consumer already running, please configure a new consumer for concurrent processing or set partitions")
 		checkError(err, "Error starting the consumer", c.log)
@@ -294,7 +310,7 @@ func (c *consumer) StartConsumingPartitions(queue string, ack, activePassive, en
 
 			cw := w
 			part.HandleInSequence(func(done chan bool) {
-				c.handle(cw, message, ack, enableRetries, 0, retryTimesOnError, requeueTimeIntervalOnError)
+				c.handle(cw, message, ack, 0, requeueTimeIntervalOnError)
 				done <- true
 			}, partition{message, partitionResolver})
 		}
