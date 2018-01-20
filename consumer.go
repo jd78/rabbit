@@ -16,20 +16,21 @@ type Handler func(message interface{}) HandlerResponse
 type IConsumer interface {
 	AddHandler(messageType string, concreteType reflect.Type, handler Handler)
 	AddRetryHandler(messageType string, concreteType reflect.Type, handler Handler, maxRetries int)
-	StartConsuming(queue string, ack, activePassive bool, activePassiveRetryInterval, requeueTimeIntervalOnError time.Duration,
+	StartConsuming(queue string, ack, activePassive bool, activePassiveRetryInterval time.Duration,
 		concurrentConsumers int, args map[string]interface{}) string
-	StartConsumingPartitions(queue string, ack, activePassive bool, activePassiveRetryInterval, requeueTimeIntervalOnError,
+	StartConsumingPartitions(queue string, ack, activePassive bool, activePassiveRetryInterval,
 		maxWaitingTimeRetryIntervalOnPartitionError time.Duration, partitions int,
 		partitionResolver map[reflect.Type]func(message interface{}) int64, args map[string]interface{}) string
 }
 
 type consumer struct {
-	handlers        map[string]Handler
-	types           map[string]reflect.Type
-	maxRetries      map[string]int
-	log             *rabbitLogger
-	channel         *amqp.Channel
-	consumerRunning map[string]bool
+	handlers                  map[string]Handler
+	types                     map[string]reflect.Type
+	maxRetries                map[string]int
+	log                       *rabbitLogger
+	channel                   *amqp.Channel
+	consumerRunning           map[string]bool
+	requeueWaitingTimeOnError time.Duration
 }
 
 var roundrobin int64
@@ -48,7 +49,8 @@ func (p partition) GetPartition() int64 {
 	return atomic.AddInt64(&roundrobin, 1)
 }
 
-func (r *rabbit) configureConsumer(prefetch int) IConsumer {
+//requeueWaitingTimeOnError: time interval requeueing a message in case of handler error (message ordering will be lost). Takes effect if enableRetries is false
+func (r *rabbit) configureConsumer(prefetch int, requeueWaitingTimeOnError time.Duration) IConsumer {
 	channel, err := r.connection.Channel()
 	checkError(err, "Error creating the producing channel", r.log)
 
@@ -76,7 +78,7 @@ func (r *rabbit) configureConsumer(prefetch int) IConsumer {
 	h := make(map[string]Handler)
 	t := make(map[string]reflect.Type)
 	retries := make(map[string]int)
-	return &consumer{h, t, retries, r.log, channel, make(map[string]bool)}
+	return &consumer{h, t, retries, r.log, channel, make(map[string]bool), requeueWaitingTimeOnError}
 }
 
 func (c *consumer) handlerExists(messageType string) bool {
@@ -109,8 +111,7 @@ func (c *consumer) AddRetryHandler(messageType string, concreteType reflect.Type
 	c.maxRetries[messageType] = maxRetries
 }
 
-func (c *consumer) handle(w amqp.Delivery, message interface{}, ack bool, retried int,
-	requeueTimeMillisecondsOnError time.Duration) {
+func (c *consumer) handle(w amqp.Delivery, message interface{}, ack bool, retried int) {
 	if w.Redelivered {
 		if c.log.logLevel >= Info {
 			c.log.info(fmt.Sprintf("MessageID=%s, CorrelationId=%s, has been redelivered",
@@ -154,11 +155,11 @@ func (c *consumer) handle(w amqp.Delivery, message interface{}, ack bool, retrie
 					c.log.debug(fmt.Sprintf("MessageId=%s, CorrelationId=%s, retry=%d times, retrying due to error...",
 						w.MessageId, w.CorrelationId, retried))
 				}
-				c.handle(w, message, ack, retried+1, requeueTimeMillisecondsOnError)
+				c.handle(w, message, ack, retried+1)
 			}
 		} else {
 			go func() {
-				time.Sleep(requeueTimeMillisecondsOnError)
+				time.Sleep(c.requeueWaitingTimeOnError)
 				(&envelope{&w}).maybeRequeueMessage(ack, c.log)
 			}()
 		}
@@ -182,10 +183,9 @@ func (c *consumer) deserializeMessage(w amqp.Delivery) (interface{}, error) {
 //ack: true enables ack
 //activePassive: enables acrive and sleepy passive consumers
 //activePassiveRetryInterval: time interval checking if the queue has a consumer
-//requeueTimeIntervalOnError: time interval requeueing a message in case of handler error (message ordering will be lost). Takes effect if enableRetries is false
 //concurrentConsumers: number of consumers
 //args: consumer args
-func (c *consumer) StartConsuming(queue string, ack, activePassive bool, activePassiveRetryInterval, requeueTimeIntervalOnError time.Duration,
+func (c *consumer) StartConsuming(queue string, ack, activePassive bool, activePassiveRetryInterval time.Duration,
 	concurrentConsumers int, args map[string]interface{}) string {
 	if _, exists := c.consumerRunning[queue]; exists {
 		err := errors.New("Consumer already running, please configure a new consumer for concurrent processing or set the concurrentConsumers")
@@ -235,7 +235,7 @@ func (c *consumer) StartConsuming(queue string, ack, activePassive bool, activeP
 					continue
 				}
 
-				c.handle(w, message, ack, 0, requeueTimeIntervalOnError)
+				c.handle(w, message, ack, 0)
 			}
 		}(delivery)
 	}
@@ -250,14 +250,13 @@ func (c *consumer) StartConsuming(queue string, ack, activePassive bool, activeP
 //ack: true enables ack
 //activePassive: enables acrive and sleepy passive consumers
 //activePassiveRetryInterval: time interval checking if the queue has a consumer
-//requeueTimeIntervalOnError: time interval requeueing a message in case of handler error (message ordering will be lost). Takes effect if enableRetries is false
 //maxWaitingTimeRetryIntervalOnPartitionError: Sleep time between retries in case of handler error
 //concurrentConsumers: number of consumers
 //partitions: number of consurrent/consistent partitions
 //partitionResolver: map[reflect.Type]func(message interface{}) int64, for each message type specify a function that will return the key used to partition
 //args: consumer args
 func (c *consumer) StartConsumingPartitions(queue string, ack, activePassive bool, activePassiveRetryInterval,
-	requeueTimeIntervalOnError, maxWaitingTimeRetryIntervalOnPartitionError time.Duration,
+	maxWaitingTimeRetryIntervalOnPartitionError time.Duration,
 	partitions int, partitionResolver map[reflect.Type]func(message interface{}) int64, args map[string]interface{}) string {
 	if _, exists := c.consumerRunning[queue]; exists {
 		err := errors.New("Consumer already running, please configure a new consumer for concurrent processing or set partitions")
@@ -310,7 +309,7 @@ func (c *consumer) StartConsumingPartitions(queue string, ack, activePassive boo
 
 			cw := w
 			part.HandleInSequence(func(done chan bool) {
-				c.handle(cw, message, ack, 0, requeueTimeIntervalOnError)
+				c.handle(cw, message, ack, 0)
 				done <- true
 			}, partition{message, partitionResolver})
 		}
