@@ -11,7 +11,7 @@ import (
 	"github.com/streadway/amqp"
 )
 
-type Handler func(message interface{}) HandlerResponse
+type Handler func(message interface{}, header map[string]interface{}) HandlerResponse
 
 type IConsumer interface {
 	AddHandler(messageType string, concreteType reflect.Type, handler Handler)
@@ -128,7 +128,7 @@ func (c *consumer) handle(w amqp.Delivery, message interface{}, ack bool, retrie
 	}
 	handler := c.handlers[w.Type]
 
-	response := handler(message)
+	response := handler(message, w.Headers)
 	switch response {
 	case Completed:
 		if c.log.logLevel >= Debug {
