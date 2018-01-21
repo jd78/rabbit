@@ -86,6 +86,14 @@ func (c *consumer) handlerExists(messageType string) bool {
 	return exists
 }
 
+func (c *consumer) GetHandlerKeys() []string {
+	keys := make([]string, 0, len(c.handlers))
+	for k := range c.handlers {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
 func (c *consumer) getMaxRetries(messageType string) (bool, int) {
 	maxRetries, exists := c.maxRetries[messageType]
 	return exists, maxRetries
@@ -225,6 +233,8 @@ func (c *consumer) StartConsuming(queue string, ack, activePassive bool, activeP
 		go func(work <-chan amqp.Delivery) {
 			for w := range work {
 				if !c.handlerExists(w.Type) {
+					c.log.debug(fmt.Sprintf("MessageId=%s, CorrelationId=%s, no handler registered for %s, registeredTypes=%v",
+						w.MessageId, w.CorrelationId, w.Type, c.GetHandlerKeys()))
 					(&envelope{&w}).maybeAckMessage(ack, c.log)
 					continue
 				}
@@ -297,6 +307,8 @@ func (c *consumer) StartConsumingPartitions(queue string, ack, activePassive boo
 	go func(work <-chan amqp.Delivery) {
 		for w := range work {
 			if !c.handlerExists(w.Type) {
+				c.log.debug(fmt.Sprintf("MessageId=%s, CorrelationId=%s, no handler registered for %s, registeredTypes=%v",
+					w.MessageId, w.CorrelationId, w.Type, c.GetHandlerKeys()))
 				(&envelope{&w}).maybeAckMessage(ack, c.log)
 				continue
 			}

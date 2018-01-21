@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -100,7 +101,7 @@ func send(s *sendMessage, logLevel LogLevel) {
 	checkError(err, "json serializer error", s.producer.log)
 
 	mt := pattern.ResultMatch(s.messageType).
-		WhenValue("", func() interface{} { return reflect.TypeOf(s.message).String() }).
+		WhenValue("", func() interface{} { return strings.Replace(reflect.TypeOf(s.message).String(), "*", "", 1) }).
 		ResultOrDefault(s.messageType).(string)
 
 	if logLevel >= Debug {
