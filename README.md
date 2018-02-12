@@ -5,7 +5,7 @@
 Rabbit is built on top of streadway/amqp RabbitMQ client (https://github.com/streadway/amqp) and brings the following functionalities:
 
 - Can produce and consume messages in jSON and Protobuf.
-- Can produce and consume concurrently, specifying the wanted number. The producer is concurrent round robin, the consumer is a concurrent multichannel.
+- Can produce and consume concurrently, specifying the number of consumers/producers. The producer is concurrent round robin, the consumer is a concurrent multichannels.
 - Partition consumer, can consume messages in sequences while concurrent. Assigning a partition id to a message, this will be consumed by the same channel, in order.
 - Dynamic handlers.
 - Message retries.
@@ -53,7 +53,7 @@ rabbit.TopologyConfiguration().
 #### Producer
 
 It's necessary to configure a producer for each output exchange you want to send messages to. 
-Each producer has at least one rabbit channel. You can specify how many concurrent and round robin producers you want, keeping in mind that each producer specified in the parameter "numberOfProducers" will create it's own rabbit channel. This has been done to ensure that the publish confirmation works correctly. Two messages cannot be sent at the same time for the same channel. Sent are queued in a round robin way.
+Each producer has at least one rabbit channel. You can specify how many concurrent and round robin producers you want, keeping in mind that each producer specified in the parameter "numberOfProducers" will create it's own rabbit channel. This has been done to ensure that the publish confirmation works correctly. Two messages cannot be sent at the same time for the same channel. Sends are queued in a round robin way.
 
 ```go
 
@@ -99,7 +99,7 @@ func TestMessageHandler(test string, producer rabbit.IProducer) func(message int
 ```
 
 A message handler can have parameters or not. You might want to inject your repository, a rabbit producer, etc.
-A handler always return the function func(message interface{}, header map[string]interface{}) rabbit.HandlerResponse, where message and handler are respectively the message and the handler that will be injected by the rabbit library; and rabbit.HandlerResponse is the return status of the handler that will be read by the rabbit library to perfom specific operations like ack, reqeueing, etc.
+A handler always returns the function func(message interface{}, header map[string]interface{}) rabbit.HandlerResponse, where message and handler are respectively the message and the handler that will be injected by the rabbit library; and rabbit.HandlerResponse is the return status of the handler that will be read by the rabbit library to perfom specific operations like ack, reqeueing, etc.
 
 rabbit.HandlerResponse can be:
  - rabbit.Completed, if all good, the message will be eventually acked
@@ -123,11 +123,34 @@ consumer := rabbit.ConfigureConsumer(100, 5*time.Second)
 
  ```go
 
-h := TestMessageHandler("teststring", producer) //I'm passing a string and the producer dependency
+h := TestMessageHandler("teststring", consumerProducer) //I'm passing a string and the producer dependency
 consumer.AddHandler("main.TestMessage", reflect.TypeOf(TestMessage{}), h)
 
  ```
 
  main.TestMessage is the type that will be send as envelope type, and the reflected type as second parameter is the is the contract representing the message. Finally, as third parameter, we pass the handler that will handle the message.
 
- 
+ At this point, to start the consumer, without using the partitioner, it's enough to do
+
+ ```go
+
+//parameters: queue name, ack, use active passive, passive check for consumer interval, concurrent consumers, amqp consumer args
+ consumer.StartConsuming("test.inbound", true, true, 1000*time.Millisecond, 1, nil)
+
+ ```
+
+If you want to use the partitioner instead you need to configure the partition resolver.
+
+```go
+
+partitionerResolver := make(map[reflect.Type]func(message interface{}) int64)
+partitionerResolver[reflect.TypeOf(TestMessage{})] = func(message interface{}) int64 { return int64(message.(TestMessage).Id) }
+
+//parameters: queue name, ack, use active passive, passive check for consumer interval, max time waiting on partition handler error, 
+//number or partitions, resolver, amqp consumer args.
+consumer.StartConsumingPartitions("test.inbound", true, true,
+		3000*time.Millisecond, 5*time.Second, 30, partitionerResolver, nil)
+
+```
+
+Be aware that if a partition is in error, no messages will be consumed for that partition but will be queued until the message in error gets correctly consumed.
