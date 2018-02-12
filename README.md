@@ -1,7 +1,5 @@
 # Rebbit
 
-[![Build Status](https://travis-ci.org/jd78/rabbit.svg?branch=master)](https://travis-ci.org/jd78/rabbit)
-
 Rabbit is built on top of streadway/amqp RabbitMQ client (https://github.com/streadway/amqp) and brings the following functionalities:
 
 - Can produce and consume messages in jSON and Protobuf.
