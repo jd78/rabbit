@@ -154,3 +154,7 @@ consumer.StartConsumingPartitions("test.inbound", true, true,
 ```
 
 Be aware that if a partition is in error, no messages will be consumed for that partition but will be queued until the message in error gets correctly consumed.
+
+### Demo
+
+A simple demo is located in the example folder

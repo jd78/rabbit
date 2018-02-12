@@ -1,0 +1,7 @@
+syntax = "proto2";
+package main;
+
+message Test {
+    required int32 Id = 1;
+    required string label = 2;
+}
